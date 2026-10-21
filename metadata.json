@@ -1,0 +1,6 @@
+{
+  "name": "PLERD ROOM · Biblioteca Inteligente y Aprendizaje Adaptativo",
+  "description": "Plataforma de aprendizaje adaptativo, biblioteca inteligente y tutor pedagógico para el Programa de Liderazgo Estudiantil de la República Dominicana (PLERD - MINERD), siguiendo la estética de MINUME ROOM.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
