@@ -4,7 +4,7 @@
  */
 
 import React, { createContext, useContext, useState, useEffect, ReactNode } from 'react';
-import { Notebook, Source, ExamResult, View } from '../types';
+import { Notebook, Source, ExamResult, View, ChatMessage } from '../types';
 import { initialNotebooks } from '../data/seed';
 
 const STORAGE_KEY = 'plerd_personal_v2';
@@ -16,6 +16,8 @@ interface AppContextType {
   createNotebook: (title: string) => void;
   addSource: (notebookId: string, source: Omit<Source, 'id'>) => void;
   saveExamResult: (notebookId: string, result: Omit<ExamResult, 'id'>) => void;
+  chatHistories: Record<string, ChatMessage[]>;
+  setNotebookChat: (notebookId: string, messages: ChatMessage[]) => void;
 }
 
 const AppContext = createContext<AppContextType | undefined>(undefined);
@@ -37,6 +39,9 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
   });
 
   const [view, setView] = useState<View>({ name: 'library' });
+
+  // Historial de chat por cuaderno durante la sesión abierta (en memoria)
+  const [chatHistories, setChatHistories] = useState<Record<string, ChatMessage[]>>({});
 
   // Guardar en localStorage únicamente los cuadernos personales
   useEffect(() => {
@@ -93,7 +98,6 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
       id: crypto.randomUUID(),
     };
 
-    // Si es personal, actualiza personalNotebooks; si es general, se registra en la sesión
     const isPersonal = personalNotebooks.some((nb) => nb.id === notebookId);
     if (isPersonal) {
       setPersonalNotebooks((prev) =>
@@ -111,6 +115,13 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
     setView({ name: 'results', id: notebookId, examId: newResult.id });
   };
 
+  const setNotebookChat = (notebookId: string, messages: ChatMessage[]) => {
+    setChatHistories((prev) => ({
+      ...prev,
+      [notebookId]: messages,
+    }));
+  };
+
   return (
     <AppContext.Provider
       value={{
@@ -120,6 +131,8 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
         createNotebook,
         addSource,
         saveExamResult,
+        chatHistories,
+        setNotebookChat,
       }}
     >
       {children}

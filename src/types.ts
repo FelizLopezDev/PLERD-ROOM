@@ -38,6 +38,12 @@ export interface Notebook {
   exams: ExamResult[];
 }
 
+export interface ChatMessage {
+  id: string;
+  sender: 'user' | 'assistant';
+  text: string;
+}
+
 export type View =
   | { name: 'library' }
   | { name: 'notebook'; id: string }

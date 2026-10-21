@@ -7,6 +7,7 @@ import express from 'express';
 import dotenv from 'dotenv';
 import path from 'path';
 import { fileURLToPath } from 'url';
+import { GoogleGenAI } from '@google/genai';
 
 dotenv.config();
 
@@ -17,45 +18,154 @@ const app = express();
 const port = parseInt(process.env.PORT || '3000', 10);
 const isProd = process.env.NODE_ENV === 'production';
 
-app.use(express.json());
+// Límite de express.json subido a 10mb
+app.use(express.json({ limit: '10mb' }));
 
 const apiKey = process.env.GEMINI_API_KEY;
-if (!apiKey) {
-  console.warn('[PLERD ROOM] Advertencia: GEMINI_API_KEY no encontrada en las variables de entorno. Se utilizarán respuestas simuladas.');
+let ai: GoogleGenAI | null = null;
+
+if (apiKey) {
+  ai = new GoogleGenAI({ apiKey });
+} else {
+  console.warn('[PLERD ROOM] Advertencia: GEMINI_API_KEY no encontrada en las variables de entorno.');
 }
 
-// Ruta vacía /api/chat
+// Ruta /api/chat: responde estrictamente con base en las fuentes marcadas
 app.post('/api/chat', async (req, res) => {
-  const { message, notebookId, sources } = req.body;
-  if (!apiKey) {
-    return res.json({
-      text: 'Respuesta simulada: El asistente responde exclusivamente con base en los documentos de este cuaderno.',
-      citations: [],
+  const { message, history, sources } = req.body;
+
+  if (!apiKey || !ai) {
+    return res.status(503).json({
+      error: 'No se encontró la clave GEMINI_API_KEY en el servidor. Configura la clave en las variables de entorno para activar las consultas.',
     });
   }
-  return res.json({ text: '', citations: [] });
+
+  if (!Array.isArray(sources) || sources.length === 0) {
+    return res.status(400).json({
+      error: 'Marca al menos una fuente para formular consultas.',
+    });
+  }
+
+  const sourcesContext = sources
+    .map(
+      (s: { title: string; content: string }, index: number) =>
+        `[FUENTE ${index + 1}: "${s.title}"]\n${s.content}\n[FIN FUENTE ${index + 1}]`
+    )
+    .join('\n\n');
+
+  const systemInstruction = `Responde solo con el contenido de las fuentes proporcionadas. Cita siempre el título de la fuente y la sección. Si la respuesta no está en ellas, di claramente que no aparece en las fuentes y no uses conocimiento externo.\n\nFUENTES SUMINISTRADAS:\n${sourcesContext}`;
+
+  const contents: any[] = [];
+  if (Array.isArray(history)) {
+    for (const h of history) {
+      if (h.sender && h.text) {
+        contents.push({
+          role: h.sender === 'user' ? 'user' : 'model',
+          parts: [{ text: h.text }],
+        });
+      }
+    }
+  }
+
+  contents.push({
+    role: 'user',
+    parts: [{ text: message || '' }],
+  });
+
+  try {
+    const response = await ai.models.generateContent({
+      model: 'gemini-3.8-flash',
+      contents,
+      config: {
+        systemInstruction,
+        thinkingConfig: {
+          thinkingBudget: 1024,
+        },
+      },
+    });
+
+    const text = response.text || '';
+    if (!text.trim()) {
+      return res.status(500).json({
+        error: 'El modelo no generó texto para esta consulta. Intenta reformularla.',
+      });
+    }
+
+    return res.json({ text });
+  } catch (err: any) {
+    console.error('[PLERD ROOM] Error de Gemini en /api/chat:', err);
+    return res.status(500).json({
+      error: `Error al consultar Gemini (${err?.message || 'Fallo de conexión'}).`,
+    });
+  }
 });
 
-// Ruta vacía /api/study
+// Ruta /api/study: genera resumen, puntos clave o glosario de las fuentes marcadas
 app.post('/api/study', async (req, res) => {
-  const { action, sourceId } = req.body;
-  if (!apiKey) {
-    return res.json({
-      summary: 'Resumen simulado del contenido seleccionado.',
-      keyPoints: ['Punto clave 1', 'Punto clave 2'],
+  const { action, sources } = req.body;
+
+  if (!apiKey || !ai) {
+    return res.status(503).json({
+      error: 'No se encontró la clave GEMINI_API_KEY en el servidor. Configura la clave en las variables de entorno.',
     });
   }
-  return res.json({ summary: '', keyPoints: [] });
+
+  if (!Array.isArray(sources) || sources.length === 0) {
+    return res.status(400).json({
+      error: 'Marca al menos una fuente para generar material de estudio.',
+    });
+  }
+
+  const sourcesContext = sources
+    .map(
+      (s: { title: string; content: string }, index: number) =>
+        `[FUENTE ${index + 1}: "${s.title}"]\n${s.content}\n[FIN FUENTE ${index + 1}]`
+    )
+    .join('\n\n');
+
+  let promptAction = '';
+  if (action === 'summary') {
+    promptAction = 'Elabora un resumen conciso y fiel estructurado en párrafos cortos, basado únicamente en las fuentes anteriores. Cita los títulos de las fuentes.';
+  } else if (action === 'keypoints') {
+    promptAction = 'Extrae los puntos clave y reglas obligatorias en una lista con viñetas, fundamentados únicamente en las fuentes anteriores. Cita los títulos de las fuentes.';
+  } else if (action === 'glossary') {
+    promptAction = 'Elabora un glosario con los términos y conceptos reglamentarios esenciales definidos o explicados en las fuentes anteriores. Cada término debe tener una definición precisa basada en el texto.';
+  } else {
+    return res.status(400).json({ error: 'Acción de estudio no reconocida.' });
+  }
+
+  const systemInstruction = `Responde solo con el contenido de las fuentes proporcionadas. Cita siempre el título de la fuente y la sección. Si la respuesta no está en ellas, di claramente que no aparece en las fuentes y no uses conocimiento externo.\n\nFUENTES SUMINISTRADAS:\n${sourcesContext}`;
+
+  try {
+    const response = await ai.models.generateContent({
+      model: 'gemini-3.8-flash',
+      contents: [{ role: 'user', parts: [{ text: promptAction }] }],
+      config: {
+        systemInstruction,
+        thinkingConfig: {
+          thinkingBudget: 1024,
+        },
+      },
+    });
+
+    const text = response.text || '';
+    if (!text.trim()) {
+      return res.status(500).json({
+        error: 'El modelo no devolvió contenido para esta acción.',
+      });
+    }
+
+    return res.json({ text });
+  } catch (err: any) {
+    console.error('[PLERD ROOM] Error de Gemini en /api/study:', err);
+    return res.status(500).json({
+      error: `Error al generar material de estudio con Gemini (${err?.message || 'Fallo de conexión'}).`,
+    });
+  }
 });
 
-// Ruta vacía /api/exam
+// Ruta /api/exam: reservada para generación de preguntas
 app.post('/api/exam', async (req, res) => {
-  const { notebookId, sources } = req.body;
-  if (!apiKey) {
-    return res.json({
-      questions: [],
-    });
-  }
   return res.json({ questions: [] });
 });
 

@@ -9,7 +9,7 @@ import { Plus } from 'lucide-react';
 
 export const LibraryView: React.FC = () => {
   const { notebooks, go, createNotebook } = useApp();
-  const [isCreating, setIsCreating] = useState(false);
+  const [isModalOpen, setIsModalOpen] = useState(false);
   const [newTitle, setNewTitle] = useState('');
 
   const handleCreate = (e: React.FormEvent) => {
@@ -17,7 +17,7 @@ export const LibraryView: React.FC = () => {
     if (!newTitle.trim()) return;
     createNotebook(newTitle.trim());
     setNewTitle('');
-    setIsCreating(false);
+    setIsModalOpen(false);
   };
 
   const generalNotebooks = notebooks.filter((n) => n.scope === 'general');
@@ -25,112 +25,136 @@ export const LibraryView: React.FC = () => {
 
   return (
     <div className="space-y-8">
-      {/* Encabezado y Acción */}
-      <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4">
-        <div>
-          <h1 className="text-xl font-bold text-ink">Cuadernos de Estudio</h1>
-          <p className="text-sm text-muted">
-            Selecciona un cuaderno para estudiar con tus fuentes o crear uno nuevo.
-          </p>
-        </div>
-
-        <button
-          onClick={() => setIsCreating(true)}
-          className="inline-flex items-center gap-2 bg-accent hover:bg-accent-strong text-white text-xs font-semibold px-4 py-2 rounded-full transition-colors self-start sm:self-auto"
-        >
-          <Plus size={16} />
-          <span>Nuevo cuaderno</span>
-        </button>
-      </div>
-
-      {/* Formulario para nuevo cuaderno personal */}
-      {isCreating && (
-        <form
-          onSubmit={handleCreate}
-          className="bg-surface border border-line rounded-2xl p-5 space-y-3"
-        >
-          <h3 className="text-sm font-semibold text-ink">Crear cuaderno personal</h3>
-          <input
-            type="text"
-            required
-            autoFocus
-            placeholder="Título del cuaderno (ej. Postura de Delegación · PNUD)"
-            value={newTitle}
-            onChange={(e) => setNewTitle(e.target.value)}
-            className="w-full bg-base border border-line rounded-xl px-3.5 py-2 text-sm text-ink focus:outline-none focus:border-accent"
-          />
-          <div className="flex items-center gap-2 justify-end">
-            <button
-              type="button"
-              onClick={() => {
-                setIsCreating(false);
-                setNewTitle('');
-              }}
-              className="text-xs text-muted hover:text-ink px-3 py-1.5 border border-line rounded-full"
-            >
-              Cancelar
-            </button>
-            <button
-              type="submit"
-              disabled={!newTitle.trim()}
-              className="text-xs font-semibold bg-accent hover:bg-accent-strong disabled:opacity-50 text-white px-4 py-1.5 rounded-full"
-            >
-              Crear
-            </button>
-          </div>
-        </form>
-      )}
-
-      {/* Sección Cuadernos Oficiales */}
+      {/* Sección 1: Recursos Generales */}
       <div className="space-y-3">
-        <h2 className="text-xs font-semibold uppercase tracking-wider text-muted">
-          Materiales Oficiales PLERD
-        </h2>
-        <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
-          {generalNotebooks.map((nb) => (
-            <div
-              key={nb.id}
-              onClick={() => go({ name: 'notebook', id: nb.id })}
-              className="bg-surface border border-line rounded-2xl p-5 hover:border-accent cursor-pointer transition-all space-y-2"
-            >
-              <span className="text-xs text-muted block">{nb.program}</span>
-              <h3 className="font-semibold text-ink text-base leading-snug">{nb.title}</h3>
-              <p className="text-xs text-muted pt-1">
-                {nb.sources.length} {nb.sources.length === 1 ? 'fuente' : 'fuentes'}
-              </p>
-            </div>
-          ))}
+        <div>
+          <h2 className="text-lg font-bold text-ink">Recursos generales</h2>
+          <p className="text-xs text-muted">Material oficial del PLERD</p>
         </div>
-      </div>
 
-      {/* Sección Cuadernos Personales */}
-      <div className="space-y-3 pt-2">
-        <h2 className="text-xs font-semibold uppercase tracking-wider text-muted">
-          Cuadernos Personales
-        </h2>
-
-        {personalNotebooks.length === 0 ? (
-          <div className="bg-surface border border-line rounded-2xl p-6 text-center text-xs text-muted">
-            No tienes cuadernos personales todavía. Pulsa "Nuevo cuaderno" para agregar tus notas o documentos.
-          </div>
-        ) : (
-          <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
-            {personalNotebooks.map((nb) => (
-              <div
+        <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+          {generalNotebooks.map((nb) => {
+            const latestExam = nb.exams && nb.exams.length > 0 ? nb.exams[0] : null;
+            return (
+              <button
+                type="button"
                 key={nb.id}
                 onClick={() => go({ name: 'notebook', id: nb.id })}
-                className="bg-surface border border-line rounded-2xl p-5 hover:border-accent cursor-pointer transition-all space-y-2"
+                className="w-full text-left bg-surface border border-line rounded-2xl p-5 hover:border-muted cursor-pointer transition-all space-y-2 focus:outline-none"
               >
-                <span className="text-xs text-muted block">Personal</span>
+                <span className="text-xs text-muted block">{nb.program}</span>
                 <h3 className="font-semibold text-ink text-base leading-snug">{nb.title}</h3>
                 <p className="text-xs text-muted pt-1">
                   {nb.sources.length} {nb.sources.length === 1 ? 'fuente' : 'fuentes'}
                 </p>
-              </div>
-            ))}
+                {latestExam && (
+                  <span className="text-xs text-muted block pt-1">
+                    Último examen: {latestExam.correct}/{latestExam.total}
+                  </span>
+                )}
+              </button>
+            );
+          })}
+        </div>
+      </div>
+
+      {/* Sección 2: Mis Recursos */}
+      <div className="space-y-3 pt-2">
+        <div className="flex items-center gap-2.5">
+          <h2 className="text-lg font-bold text-ink">Mis recursos</h2>
+          <button
+            type="button"
+            onClick={() => setIsModalOpen(true)}
+            aria-label="Crear cuaderno nuevo"
+            className="w-7 h-7 rounded-full border border-line bg-surface hover:bg-base text-ink flex items-center justify-center transition-colors"
+          >
+            <Plus size={16} strokeWidth={1.75} />
+          </button>
+        </div>
+
+        {personalNotebooks.length === 0 ? (
+          <div className="bg-surface border border-line rounded-2xl p-8 text-center space-y-3">
+            <button
+              type="button"
+              onClick={() => setIsModalOpen(true)}
+              className="text-xs font-semibold text-ink hover:text-muted border border-line bg-surface px-4 py-2 rounded-full transition-colors"
+            >
+              Crear mi primer cuaderno
+            </button>
+          </div>
+        ) : (
+          <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+            {personalNotebooks.map((nb) => {
+              const latestExam = nb.exams && nb.exams.length > 0 ? nb.exams[0] : null;
+              return (
+                <button
+                  type="button"
+                  key={nb.id}
+                  onClick={() => go({ name: 'notebook', id: nb.id })}
+                  className="w-full text-left bg-surface border border-line rounded-2xl p-5 hover:border-muted cursor-pointer transition-all space-y-2 focus:outline-none"
+                >
+                  <span className="text-xs text-muted block">Personal</span>
+                  <h3 className="font-semibold text-ink text-base leading-snug">{nb.title}</h3>
+                  <p className="text-xs text-muted pt-1">
+                    {nb.sources.length} {nb.sources.length === 1 ? 'fuente' : 'fuentes'}
+                  </p>
+                  {latestExam && (
+                    <span className="text-xs text-muted block pt-1">
+                      Último examen: {latestExam.correct}/{latestExam.total}
+                    </span>
+                  )}
+                </button>
+              );
+            })}
           </div>
         )}
       </div>
+
+      {/* Modal para Crear Cuaderno Personal */}
+      {isModalOpen && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-ink/20 backdrop-blur-xs">
+          <div className="bg-surface border border-line rounded-2xl max-w-md w-full p-6 space-y-4 shadow-sm">
+            <div className="space-y-1">
+              <h3 className="text-base font-bold text-ink">Nuevo cuaderno</h3>
+              <p className="text-xs text-muted">
+                Los cuadernos personales son privados y se guardan únicamente en este navegador.
+              </p>
+            </div>
+
+            <form onSubmit={handleCreate} className="space-y-4">
+              <input
+                type="text"
+                required
+                autoFocus
+                placeholder="Ej. Notas de debate y argumentación"
+                value={newTitle}
+                onChange={(e) => setNewTitle(e.target.value)}
+                className="w-full bg-base border border-line rounded-xl px-3.5 py-2 text-sm text-ink focus:outline-none"
+              />
+
+              <div className="flex items-center justify-end gap-2 pt-1">
+                <button
+                  type="button"
+                  onClick={() => {
+                    setIsModalOpen(false);
+                    setNewTitle('');
+                  }}
+                  className="text-xs text-muted hover:text-ink px-4 py-2 border border-line rounded-full"
+                >
+                  Cancelar
+                </button>
+                <button
+                  type="submit"
+                  disabled={!newTitle.trim()}
+                  className="text-xs font-semibold bg-accent hover:bg-accent-strong disabled:opacity-50 text-white px-5 py-2 rounded-full transition-colors"
+                >
+                  Crear cuaderno
+                </button>
+              </div>
+            </form>
+          </div>
+        </div>
+      )}
     </div>
   );
 };

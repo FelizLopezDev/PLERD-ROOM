@@ -3,37 +3,70 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
-import React, { useState } from 'react';
+import React, { useState, useEffect, useMemo, useRef } from 'react';
 import { useApp } from '../context/AppContext';
-import { Source } from '../types';
+import { ChatMessage, Source } from '../types';
 import { ArrowLeft, GraduationCap, Plus, FileText, Send } from 'lucide-react';
 
-interface ChatMessage {
-  id: string;
-  sender: 'user' | 'assistant';
-  text: string;
-}
-
 export const NotebookView: React.FC<{ notebookId: string }> = ({ notebookId }) => {
-  const { notebooks, go, addSource } = useApp();
+  const { notebooks, go, addSource, chatHistories, setNotebookChat } = useApp();
   const notebook = notebooks.find((n) => n.id === notebookId);
+
+  // Casillas de fuentes marcadas por defecto
+  const [checkedSourceIds, setCheckedSourceIds] = useState<Set<string>>(() => {
+    return new Set(notebook?.sources.map((s) => s.id) || []);
+  });
+
+  // Asegurar que las fuentes nuevas se marquen automáticamente
+  useEffect(() => {
+    if (notebook) {
+      setCheckedSourceIds(new Set(notebook.sources.map((s) => s.id)));
+    }
+  }, [notebook?.sources.length]);
 
   const [activeSourceId, setActiveSourceId] = useState<string | null>(
     notebook && notebook.sources.length > 0 ? notebook.sources[0].id : null
   );
 
-  const [isAddingSource, setIsAddingSource] = useState(false);
-  const [sourceTitle, setSourceTitle] = useState('');
-  const [sourceContent, setSourceContent] = useState('');
+  // Historial de chat persistido en el contexto de la sesión
+  const messages = chatHistories[notebookId] || [
+    {
+      id: 'm-initial',
+      sender: 'assistant',
+      text: `Has abierto "${notebook?.title || 'este cuaderno'}". Puedes formular preguntas sobre las fuentes marcadas o solicitar materiales de estudio.`,
+    },
+  ];
 
   const [inputQuery, setInputQuery] = useState('');
-  const [messages, setMessages] = useState<ChatMessage[]>([
-    {
-      id: 'm-welcome',
-      sender: 'assistant',
-      text: `Has abierto "${notebook?.title || 'este cuaderno'}". Puedes formular preguntas sobre cualquiera de sus fuentes o pulsar "Examinarme" cuando quieras poner a prueba lo aprendido.`,
-    },
-  ]);
+  const [isThinking, setIsThinking] = useState(false);
+  const [errorMessage, setErrorMessage] = useState<string | null>(null);
+
+  // Panel Estudio
+  const [studyAction, setStudyAction] = useState<'summary' | 'keypoints' | 'glossary' | null>(null);
+  const [studyResult, setStudyResult] = useState<string | null>(null);
+  const [isStudyLoading, setIsStudyLoading] = useState(false);
+  const [studyError, setStudyError] = useState<string | null>(null);
+
+  // Modal para agregar fuente (solo personales)
+  const [isAddModalOpen, setIsAddModalOpen] = useState(false);
+  const [addMode, setAddMode] = useState<'text' | 'file' | 'link'>('text');
+  const [sourceTitle, setSourceTitle] = useState('');
+  const [sourceContent, setSourceContent] = useState('');
+  const [sourceLink, setSourceLink] = useState('');
+  const [savedConfirmation, setSavedConfirmation] = useState(false);
+  const fileInputRef = useRef<HTMLInputElement>(null);
+
+  // Preguntas sugeridas dinámicas generadas a partir de los títulos
+  const dynamicQuestions = useMemo(() => {
+    if (!notebook || notebook.sources.length === 0) return [];
+    const s = notebook.sources;
+    const q: string[] = [];
+    if (s[0]) q.push(`¿Qué establece "${s[0].title}"?`);
+    if (s[1]) q.push(`¿Cuáles son las reglas principales de "${s[1].title}"?`);
+    if (s[2]) q.push(`¿Cómo se aplica en la práctica "${s[2].title}"?`);
+    else if (s[0]) q.push(`Resume los puntos esenciales de "${s[0].title}"`);
+    return q.slice(0, 3);
+  }, [notebook?.sources]);
 
   if (!notebook) {
     return (
@@ -43,86 +76,158 @@ export const NotebookView: React.FC<{ notebookId: string }> = ({ notebookId }) =
           onClick={() => go({ name: 'library' })}
           className="inline-flex items-center gap-2 text-xs text-muted hover:text-ink px-4 py-2 border border-line rounded-full"
         >
-          <ArrowLeft size={16} />
+          <ArrowLeft size={16} strokeWidth={1.75} />
           <span>Volver a la biblioteca</span>
         </button>
       </div>
     );
   }
 
+  const selectedSources = notebook.sources.filter((s) => checkedSourceIds.has(s.id));
   const activeSource = notebook.sources.find((s) => s.id === activeSourceId);
 
-  const handleAddSource = (e: React.FormEvent) => {
-    e.preventDefault();
-    if (!sourceTitle.trim() || !sourceContent.trim()) return;
-
-    addSource(notebook.id, {
-      title: sourceTitle.trim(),
-      type: 'text',
-      content: sourceContent.trim(),
+  const toggleSourceCheck = (sourceId: string) => {
+    setCheckedSourceIds((prev) => {
+      const next = new Set(prev);
+      if (next.has(sourceId)) {
+        next.delete(sourceId);
+      } else {
+        next.add(sourceId);
+      }
+      return next;
     });
-
-    setSourceTitle('');
-    setSourceContent('');
-    setIsAddingSource(false);
   };
 
   const handleSendMessage = async (textToSend?: string) => {
-    const query = textToSend || inputQuery;
-    if (!query.trim()) return;
+    const text = textToSend || inputQuery;
+    if (!text.trim() || selectedSources.length === 0 || isThinking) return;
 
+    setErrorMessage(null);
     const userMsg: ChatMessage = {
       id: crypto.randomUUID(),
       sender: 'user',
-      text: query.trim(),
+      text: text.trim(),
     };
 
-    setMessages((prev) => [...prev, userMsg]);
+    const newHistory = [...messages, userMsg];
+    setNotebookChat(notebookId, newHistory);
     setInputQuery('');
+    setIsThinking(true);
 
-    // Búsqueda de coincidencia en las fuentes del cuaderno
-    setTimeout(() => {
-      let reply = '';
-      const lower = query.toLowerCase();
+    try {
+      const res = await fetch('/api/chat', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          message: userMsg.text,
+          history: messages,
+          sources: selectedSources.map((s) => ({ title: s.title, content: s.content })),
+        }),
+      });
 
-      const matchedSource = notebook.sources.find(
-        (s) =>
-          s.content.toLowerCase().includes(lower) ||
-          s.title.toLowerCase().includes(lower)
-      );
-
-      if (matchedSource) {
-        reply = `Según "${matchedSource.title}":\n\n${matchedSource.content.substring(0, 320)}...`;
-      } else if (lower.includes('resum') || lower.includes('ideas') || lower.includes('puntos')) {
-        const summaries = notebook.sources
-          .map((s) => `• ${s.title}: ${s.content.split('\n')[0]}`)
-          .join('\n\n');
-        reply = `Resumen de las fuentes disponibles:\n\n${summaries}`;
-      } else {
-        reply = `Con base en las ${notebook.sources.length} fuentes de "${notebook.title}", la normativa se centra en el cumplimiento de los procedimientos parlamentarios y los tiempos reglamentarios de intervención.`;
+      const data = await res.json();
+      if (!res.ok || data.error) {
+        throw new Error(data.error || 'Error al conectar con el servidor.');
       }
 
-      setMessages((prev) => [
-        ...prev,
-        {
-          id: crypto.randomUUID(),
-          sender: 'assistant',
-          text: reply,
-        },
-      ]);
-    }, 400);
+      const assistantMsg: ChatMessage = {
+        id: crypto.randomUUID(),
+        sender: 'assistant',
+        text: data.text,
+      };
+
+      setNotebookChat(notebookId, [...newHistory, assistantMsg]);
+    } catch (err: any) {
+      setErrorMessage(err.message || 'Error de conexión con el modelo.');
+    } finally {
+      setIsThinking(false);
+    }
+  };
+
+  const handleStudyAction = async (action: 'summary' | 'keypoints' | 'glossary') => {
+    if (selectedSources.length === 0 || isStudyLoading) return;
+
+    setStudyAction(action);
+    setStudyResult(null);
+    setStudyError(null);
+    setIsStudyLoading(true);
+
+    try {
+      const res = await fetch('/api/study', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          action,
+          sources: selectedSources.map((s) => ({ title: s.title, content: s.content })),
+        }),
+      });
+
+      const data = await res.json();
+      if (!res.ok || data.error) {
+        throw new Error(data.error || 'Error al generar material de estudio.');
+      }
+
+      setStudyResult(data.text);
+    } catch (err: any) {
+      setStudyError(err.message || 'Error al generar.');
+    } finally {
+      setIsStudyLoading(false);
+    }
+  };
+
+  const handleFileUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+
+    if (!sourceTitle.trim()) {
+      setSourceTitle(file.name.replace(/\.[^/.]+$/, ''));
+    }
+
+    const reader = new FileReader();
+    reader.onload = (event) => {
+      const content = event.target?.result as string;
+      setSourceContent(content || '');
+    };
+    reader.readAsText(file);
+  };
+
+  const handleSaveSource = (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!sourceTitle.trim()) return;
+
+    const finalContent =
+      addMode === 'link'
+        ? `Fuente vinculada a: ${sourceLink}\n\n${sourceContent || 'Documento en línea agregado para consulta de sala.'}`
+        : sourceContent;
+
+    if (!finalContent.trim()) return;
+
+    addSource(notebook.id, {
+      title: sourceTitle.trim(),
+      type: addMode === 'file' ? 'file' : addMode === 'link' ? 'link' : 'text',
+      content: finalContent.trim(),
+    });
+
+    setSavedConfirmation(true);
+    setTimeout(() => {
+      setSavedConfirmation(false);
+      setIsAddModalOpen(false);
+      setSourceTitle('');
+      setSourceContent('');
+      setSourceLink('');
+    }, 900);
   };
 
   return (
     <div className="space-y-6">
-      {/* Barra de cabecera del cuaderno */}
+      {/* Cabecera del Cuaderno */}
       <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 pb-2 border-b border-line">
         <div className="flex items-center gap-3">
           <button
             onClick={() => go({ name: 'library' })}
             className="inline-flex items-center gap-1.5 text-xs text-muted hover:text-ink transition-colors"
           >
-            <ArrowLeft size={16} />
+            <ArrowLeft size={16} strokeWidth={1.75} />
             <span>Biblioteca</span>
           </button>
           <span className="text-muted">/</span>
@@ -131,16 +236,17 @@ export const NotebookView: React.FC<{ notebookId: string }> = ({ notebookId }) =
 
         <button
           onClick={() => go({ name: 'exam', id: notebook.id })}
-          className="inline-flex items-center gap-2 bg-accent hover:bg-accent-strong text-white text-xs font-semibold px-5 py-2.5 rounded-full transition-colors self-start sm:self-auto"
+          disabled={notebook.sources.length === 0}
+          className="inline-flex items-center gap-2 bg-accent hover:bg-accent-strong disabled:opacity-40 disabled:cursor-not-allowed text-white text-xs font-semibold px-5 py-2.5 rounded-full transition-colors self-start sm:self-auto"
         >
-          <GraduationCap size={16} />
+          <GraduationCap size={16} strokeWidth={1.75} />
           <span>Examinarme</span>
         </button>
       </div>
 
-      {/* Contenido en dos columnas */}
+      {/* Contenido en Dos Columnas */}
       <div className="grid grid-cols-1 lg:grid-cols-12 gap-6 items-start">
-        {/* Columna Izquierda: Fuentes */}
+        {/* Columna Izquierda: Fuentes del Cuaderno */}
         <div className="lg:col-span-5 bg-surface border border-line rounded-2xl p-5 space-y-4">
           <div className="flex items-center justify-between">
             <div>
@@ -148,85 +254,75 @@ export const NotebookView: React.FC<{ notebookId: string }> = ({ notebookId }) =
                 Fuentes ({notebook.sources.length})
               </h2>
               <span className="text-xs text-muted">
-                {notebook.scope === 'general' ? 'Oficial PLERD' : 'Cuaderno personal'}
+                {notebook.scope === 'general' ? 'Material oficial del PLERD' : 'Cuaderno personal'}
               </span>
             </div>
 
             {notebook.scope === 'personal' && (
               <button
-                onClick={() => setIsAddingSource(!isAddingSource)}
-                className="inline-flex items-center gap-1 text-xs text-accent hover:text-accent-strong font-medium"
+                type="button"
+                onClick={() => setIsAddModalOpen(true)}
+                className="inline-flex items-center gap-1 text-xs text-ink hover:text-muted font-medium"
               >
-                <Plus size={16} />
-                <span>Añadir</span>
+                <Plus size={16} strokeWidth={1.75} />
+                <span>Agregar fuente</span>
               </button>
             )}
           </div>
 
-          {/* Formulario para añadir fuente (solo en cuadernos personales) */}
-          {isAddingSource && notebook.scope === 'personal' && (
-            <form onSubmit={handleAddSource} className="border border-line rounded-xl p-3.5 space-y-2.5 bg-base">
-              <input
-                type="text"
-                required
-                placeholder="Título de la fuente"
-                value={sourceTitle}
-                onChange={(e) => setSourceTitle(e.target.value)}
-                className="w-full bg-surface border border-line rounded-lg px-3 py-1.5 text-xs text-ink focus:outline-none focus:border-accent"
-              />
-              <textarea
-                required
-                rows={3}
-                placeholder="Pega aquí el texto de tus notas o documento..."
-                value={sourceContent}
-                onChange={(e) => setSourceContent(e.target.value)}
-                className="w-full bg-surface border border-line rounded-lg px-3 py-1.5 text-xs text-ink focus:outline-none focus:border-accent"
-              />
-              <div className="flex items-center justify-end gap-2">
-                <button
-                  type="button"
-                  onClick={() => setIsAddingSource(false)}
-                  className="text-xs text-muted hover:text-ink px-2.5 py-1"
-                >
-                  Cancelar
-                </button>
-                <button
-                  type="submit"
-                  disabled={!sourceTitle.trim() || !sourceContent.trim()}
-                  className="text-xs font-semibold bg-accent hover:bg-accent-strong disabled:opacity-50 text-white px-3 py-1 rounded-full"
-                >
-                  Guardar fuente
-                </button>
-              </div>
-            </form>
+          {/* Aviso si no hay fuentes seleccionadas */}
+          {checkedSourceIds.size === 0 && (
+            <p className="text-xs text-muted">
+              Marca al menos una fuente para estudiar o consultar.
+            </p>
           )}
 
-          {/* Lista de fuentes con FileText únicamente aquí */}
-          <div className="space-y-1.5">
-            {notebook.sources.map((source) => {
-              const isSelected = source.id === activeSourceId;
-              return (
-                <div
-                  key={source.id}
-                  onClick={() => setActiveSourceId(source.id)}
-                  className={`flex items-center gap-2 p-2.5 rounded-xl border cursor-pointer text-xs transition-colors ${
-                    isSelected
-                      ? 'border-accent bg-base text-ink font-semibold'
-                      : 'border-line bg-surface text-muted hover:text-ink hover:border-line'
-                  }`}
-                >
-                  <FileText size={16} />
-                  <span className="truncate">{source.title}</span>
-                </div>
-              );
-            })}
+          {/* Lista de fuentes con casilla y FileText únicamente aquí */}
+          <div className="space-y-2">
+            {notebook.sources.length === 0 ? (
+              <p className="text-xs text-muted py-4 text-center">
+                No hay fuentes en este cuaderno.
+              </p>
+            ) : (
+              notebook.sources.map((source) => {
+                const isChecked = checkedSourceIds.has(source.id);
+                const isSelected = source.id === activeSourceId;
+
+                return (
+                  <div
+                    key={source.id}
+                    className={`flex items-center justify-between p-2.5 rounded-xl border text-xs transition-colors ${
+                      isSelected
+                        ? 'border-line bg-base text-ink'
+                        : 'border-line bg-surface text-muted hover:text-ink'
+                    }`}
+                  >
+                    <div
+                      onClick={() => setActiveSourceId(source.id)}
+                      className="flex items-center gap-2 flex-1 cursor-pointer truncate"
+                    >
+                      <FileText size={16} strokeWidth={1.75} />
+                      <span className="truncate">{source.title}</span>
+                    </div>
+
+                    <input
+                      type="checkbox"
+                      checked={isChecked}
+                      onChange={() => toggleSourceCheck(source.id)}
+                      aria-label={`Incluir ${source.title}`}
+                      className="w-4 h-4 ml-2 rounded border-line cursor-pointer"
+                    />
+                  </div>
+                );
+              })
+            )}
           </div>
 
           {/* Lector del fragmento de la fuente seleccionada */}
           {activeSource && (
             <div className="pt-3 border-t border-line space-y-2">
               <h3 className="text-xs font-semibold text-ink">{activeSource.title}</h3>
-              <div className="bg-base border border-line rounded-xl p-3 text-xs text-muted whitespace-pre-line leading-relaxed max-h-56 overflow-y-auto">
+              <div className="bg-base border border-line rounded-xl p-3 text-xs text-muted whitespace-pre-line leading-relaxed max-h-48 overflow-y-auto">
                 {activeSource.content}
               </div>
             </div>
@@ -234,76 +330,287 @@ export const NotebookView: React.FC<{ notebookId: string }> = ({ notebookId }) =
         </div>
 
         {/* Columna Derecha: Estudio y Chat Basado en Fuentes */}
-        <div className="lg:col-span-7 bg-surface border border-line rounded-2xl p-5 flex flex-col h-[540px]">
-          <div className="pb-3 border-b border-line flex items-center justify-between">
-            <h2 className="text-sm font-semibold text-ink">Estudio con Fuentes</h2>
-            <span className="text-xs text-muted">Exclusivo de este cuaderno</span>
+        <div className="lg:col-span-7 space-y-4">
+          {/* Panel Estudio con Resumen, Puntos clave, Glosario */}
+          <div className="bg-surface border border-line rounded-2xl p-4 space-y-3">
+            <div className="flex items-center justify-between">
+              <h2 className="text-sm font-semibold text-ink">Estudio</h2>
+              <span className="text-xs text-muted">
+                {selectedSources.length}{' '}
+                {selectedSources.length === 1 ? 'fuente marcada' : 'fuentes marcadas'}
+              </span>
+            </div>
+
+            <div className="flex items-center gap-2">
+              <button
+                type="button"
+                disabled={selectedSources.length === 0 || isStudyLoading}
+                onClick={() => handleStudyAction('summary')}
+                className="text-xs font-medium text-ink hover:text-muted disabled:opacity-40 bg-base border border-line rounded-full px-3.5 py-1.5 transition-colors"
+              >
+                Resumen
+              </button>
+              <button
+                type="button"
+                disabled={selectedSources.length === 0 || isStudyLoading}
+                onClick={() => handleStudyAction('keypoints')}
+                className="text-xs font-medium text-ink hover:text-muted disabled:opacity-40 bg-base border border-line rounded-full px-3.5 py-1.5 transition-colors"
+              >
+                Puntos clave
+              </button>
+              <button
+                type="button"
+                disabled={selectedSources.length === 0 || isStudyLoading}
+                onClick={() => handleStudyAction('glossary')}
+                className="text-xs font-medium text-ink hover:text-muted disabled:opacity-40 bg-base border border-line rounded-full px-3.5 py-1.5 transition-colors"
+              >
+                Glosario
+              </button>
+            </div>
+
+            {isStudyLoading && (
+              <p className="text-xs text-muted italic">Generando material con las fuentes...</p>
+            )}
+
+            {studyError && (
+              <p className="text-xs text-muted border border-line bg-base p-2.5 rounded-xl">
+                {studyError}
+              </p>
+            )}
+
+            {studyResult && !isStudyLoading && (
+              <div className="bg-base border border-line rounded-xl p-3.5 text-xs text-ink whitespace-pre-line leading-relaxed max-h-56 overflow-y-auto">
+                <span className="font-semibold block mb-1.5 text-muted uppercase tracking-wider text-[10px]">
+                  {studyAction === 'summary'
+                    ? 'Resumen'
+                    : studyAction === 'keypoints'
+                    ? 'Puntos clave'
+                    : 'Glosario'}
+                </span>
+                {studyResult}
+              </div>
+            )}
           </div>
 
-          {/* Mensajes del chat */}
-          <div className="flex-1 overflow-y-auto py-4 space-y-3">
-            {messages.map((m) => {
-              const isUser = m.sender === 'user';
-              return (
-                <div
-                  key={m.id}
-                  className={`flex flex-col ${isUser ? 'items-end' : 'items-start'}`}
-                >
+          {/* Interfaz de Chat */}
+          <div className="bg-surface border border-line rounded-2xl p-5 flex flex-col h-[520px]">
+            <div className="pb-3 border-b border-line flex items-center justify-between">
+              <h2 className="text-sm font-semibold text-ink">Conversación</h2>
+              <span className="text-xs text-muted">
+                {selectedSources.length > 0
+                  ? `${selectedSources.length} fuentes activas`
+                  : 'Sin fuentes marcadas'}
+              </span>
+            </div>
+
+            {/* Mensajes del chat */}
+            <div className="flex-1 overflow-y-auto py-4 space-y-3">
+              {messages.map((m) => {
+                const isUser = m.sender === 'user';
+                return (
                   <div
-                    className={`max-w-[85%] rounded-2xl p-3.5 text-xs leading-relaxed whitespace-pre-line ${
-                      isUser
-                        ? 'bg-ink text-white'
-                        : 'bg-base text-ink border border-line'
-                    }`}
+                    key={m.id}
+                    className={`flex flex-col ${isUser ? 'items-end' : 'items-start'}`}
                   >
-                    {m.text}
+                    <div
+                      className={`max-w-[85%] rounded-2xl p-3.5 text-xs leading-relaxed whitespace-pre-line ${
+                        isUser
+                          ? 'bg-ink text-white'
+                          : 'bg-base text-ink border border-line'
+                      }`}
+                    >
+                      {m.text}
+                    </div>
+                  </div>
+                );
+              })}
+
+              {isThinking && (
+                <div className="flex flex-col items-start">
+                  <div className="bg-base text-muted border border-line rounded-2xl px-4 py-2.5 text-xs italic">
+                    Pensando...
                   </div>
                 </div>
-              );
-            })}
-          </div>
+              )}
 
-          {/* Sugerencias rápidas de consulta */}
-          <div className="py-2 flex items-center gap-2 overflow-x-auto">
-            <button
-              onClick={() => handleSendMessage('¿Cuáles son los puntos principales de las fuentes?')}
-              className="text-xs text-muted hover:text-ink bg-base border border-line rounded-full px-3 py-1 whitespace-nowrap"
-            >
-              Puntos principales
-            </button>
-            <button
-              onClick={() => handleSendMessage('Explícame una regla o procedimiento importante')}
-              className="text-xs text-muted hover:text-ink bg-base border border-line rounded-full px-3 py-1 whitespace-nowrap"
-            >
-              Regla importante
-            </button>
-          </div>
+              {errorMessage && (
+                <div className="bg-base border border-line text-xs text-muted p-3 rounded-xl">
+                  {errorMessage}
+                </div>
+              )}
+            </div>
 
-          {/* Entrada de consulta con botón Send */}
-          <form
-            onSubmit={(e) => {
-              e.preventDefault();
-              handleSendMessage();
-            }}
-            className="pt-2 border-t border-line flex items-center gap-2"
-          >
-            <input
-              type="text"
-              placeholder="Haz una pregunta sobre las fuentes de este cuaderno..."
-              value={inputQuery}
-              onChange={(e) => setInputQuery(e.target.value)}
-              className="flex-1 bg-base border border-line rounded-full px-4 py-2 text-xs text-ink focus:outline-none focus:border-accent"
-            />
-            <button
-              type="submit"
-              disabled={!inputQuery.trim()}
-              className="w-8 h-8 rounded-full bg-ink text-white disabled:opacity-40 flex items-center justify-center shrink-0 transition-opacity"
+            {/* 3 Preguntas sugeridas dinámicas generadas desde los títulos */}
+            {dynamicQuestions.length > 0 && (
+              <div className="py-2 flex items-center gap-2 overflow-x-auto">
+                {dynamicQuestions.map((q, idx) => (
+                  <button
+                    key={idx}
+                    type="button"
+                    disabled={selectedSources.length === 0 || isThinking}
+                    onClick={() => handleSendMessage(q)}
+                    className="text-xs text-muted hover:text-ink disabled:opacity-40 bg-base border border-line rounded-full px-3 py-1 whitespace-nowrap transition-colors"
+                  >
+                    {q}
+                  </button>
+                ))}
+              </div>
+            )}
+
+            {/* Formulario de envío */}
+            <form
+              onSubmit={(e) => {
+                e.preventDefault();
+                handleSendMessage();
+              }}
+              className="pt-2 border-t border-line flex items-center gap-2"
             >
-              <Send size={16} />
-            </button>
-          </form>
+              <input
+                type="text"
+                disabled={selectedSources.length === 0 || isThinking}
+                placeholder={
+                  selectedSources.length === 0
+                    ? 'Marca al menos una fuente para consultar...'
+                    : 'Haz una pregunta sobre las fuentes marcadas...'
+                }
+                value={inputQuery}
+                onChange={(e) => setInputQuery(e.target.value)}
+                className="flex-1 bg-base border border-line rounded-full px-4 py-2 text-xs text-ink focus:outline-none"
+              />
+              <button
+                type="submit"
+                disabled={!inputQuery.trim() || selectedSources.length === 0 || isThinking}
+                aria-label="Enviar mensaje"
+                className="w-8 h-8 rounded-full bg-ink text-white disabled:opacity-40 flex items-center justify-center shrink-0 transition-opacity"
+              >
+                <Send size={16} strokeWidth={1.75} />
+              </button>
+            </form>
+          </div>
         </div>
       </div>
+
+      {/* Modal para Agregar Fuente (solo personales) */}
+      {isAddModalOpen && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-ink/20 backdrop-blur-xs">
+          <div className="bg-surface border border-line rounded-2xl max-w-lg w-full p-6 space-y-4 shadow-sm">
+            <h3 className="text-base font-bold text-ink">Agregar fuente</h3>
+
+            {/* Pestañas de método: texto, archivo, enlace */}
+            <div className="flex items-center gap-2 border-b border-line pb-2">
+              <button
+                type="button"
+                onClick={() => setAddMode('text')}
+                className={`text-xs px-3 py-1 rounded-full border ${
+                  addMode === 'text'
+                    ? 'border-line bg-base font-semibold text-ink'
+                    : 'border-transparent text-muted'
+                }`}
+              >
+                Pegar texto
+              </button>
+              <button
+                type="button"
+                onClick={() => setAddMode('file')}
+                className={`text-xs px-3 py-1 rounded-full border ${
+                  addMode === 'file'
+                    ? 'border-line bg-base font-semibold text-ink'
+                    : 'border-transparent text-muted'
+                }`}
+              >
+                Subir .txt / .md
+              </button>
+              <button
+                type="button"
+                onClick={() => setAddMode('link')}
+                className={`text-xs px-3 py-1 rounded-full border ${
+                  addMode === 'link'
+                    ? 'border-line bg-base font-semibold text-ink'
+                    : 'border-transparent text-muted'
+                }`}
+              >
+                Pegar enlace
+              </button>
+            </div>
+
+            <form onSubmit={handleSaveSource} className="space-y-3">
+              <div>
+                <label className="text-xs text-muted block mb-1">Título de la fuente</label>
+                <input
+                  type="text"
+                  required
+                  placeholder="Ej. Notas de procedimiento"
+                  value={sourceTitle}
+                  onChange={(e) => setSourceTitle(e.target.value)}
+                  className="w-full bg-base border border-line rounded-xl px-3 py-2 text-xs text-ink focus:outline-none"
+                />
+              </div>
+
+              {addMode === 'file' && (
+                <div>
+                  <label className="text-xs text-muted block mb-1">Archivo .txt o .md</label>
+                  <input
+                    type="file"
+                    ref={fileInputRef}
+                    accept=".txt,.md"
+                    onChange={handleFileUpload}
+                    className="w-full text-xs text-muted file:mr-2 file:py-1.5 file:px-3 file:rounded-full file:border file:border-line file:text-xs file:bg-base file:text-ink cursor-pointer"
+                  />
+                </div>
+              )}
+
+              {addMode === 'link' && (
+                <div>
+                  <label className="text-xs text-muted block mb-1">Enlace del documento</label>
+                  <input
+                    type="url"
+                    required
+                    placeholder="https://..."
+                    value={sourceLink}
+                    onChange={(e) => setSourceLink(e.target.value)}
+                    className="w-full bg-base border border-line rounded-xl px-3 py-2 text-xs text-ink focus:outline-none"
+                  />
+                </div>
+              )}
+
+              <div>
+                <label className="text-xs text-muted block mb-1">
+                  {addMode === 'link' ? 'Descripción o notas complementarias' : 'Contenido de la fuente'}
+                </label>
+                <textarea
+                  rows={4}
+                  required={addMode !== 'link'}
+                  placeholder="Escribe o revisa el contenido aquí..."
+                  value={sourceContent}
+                  onChange={(e) => setSourceContent(e.target.value)}
+                  className="w-full bg-base border border-line rounded-xl px-3 py-2 text-xs text-ink focus:outline-none"
+                />
+              </div>
+
+              {savedConfirmation && (
+                <p className="text-xs text-muted font-medium">Fuente guardada con éxito.</p>
+              )}
+
+              <div className="flex items-center justify-end gap-2 pt-2">
+                <button
+                  type="button"
+                  onClick={() => setIsAddModalOpen(false)}
+                  className="text-xs text-muted hover:text-ink px-4 py-2 border border-line rounded-full"
+                >
+                  Cancelar
+                </button>
+                <button
+                  type="submit"
+                  disabled={savedConfirmation}
+                  className="text-xs font-semibold bg-accent hover:bg-accent-strong text-white px-5 py-2 rounded-full transition-colors"
+                >
+                  Confirmar y guardar
+                </button>
+              </div>
+            </form>
+          </div>
+        </div>
+      )}
     </div>
   );
 };
