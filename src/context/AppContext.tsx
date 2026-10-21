@@ -7,7 +7,7 @@ import React, { createContext, useContext, useState, useEffect, ReactNode } from
 import { Notebook, Source, ExamResult, View } from '../types';
 import { initialNotebooks } from '../data/seed';
 
-const STORAGE_KEY = 'plerd_notebooks_v1';
+const STORAGE_KEY = 'plerd_personal_v2';
 
 interface AppContextType {
   notebooks: Notebook[];
@@ -21,30 +21,34 @@ interface AppContextType {
 const AppContext = createContext<AppContextType | undefined>(undefined);
 
 export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => {
-  const [notebooks, setNotebooks] = useState<Notebook[]>(() => {
+  const [personalNotebooks, setPersonalNotebooks] = useState<Notebook[]>(() => {
     try {
       const saved = localStorage.getItem(STORAGE_KEY);
       if (saved) {
         const parsed = JSON.parse(saved);
-        if (Array.isArray(parsed) && parsed.length > 0) {
-          return parsed;
+        if (Array.isArray(parsed)) {
+          return parsed.filter((nb: Notebook) => nb.scope === 'personal');
         }
       }
     } catch {
       // Fallback
     }
-    return initialNotebooks;
+    return [];
   });
 
   const [view, setView] = useState<View>({ name: 'library' });
 
+  // Guardar en localStorage únicamente los cuadernos personales
   useEffect(() => {
     try {
-      localStorage.setItem(STORAGE_KEY, JSON.stringify(notebooks));
+      localStorage.setItem(STORAGE_KEY, JSON.stringify(personalNotebooks));
     } catch {
       // Ignore
     }
-  }, [notebooks]);
+  }, [personalNotebooks]);
+
+  // Cuadernos generales siempre desde seed + personales guardados
+  const notebooks: Notebook[] = [...initialNotebooks, ...personalNotebooks];
 
   const go = (newView: View) => {
     setView(newView);
@@ -54,22 +58,29 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
     const trimmed = title.trim();
     if (!trimmed) return;
     const newNotebook: Notebook = {
-      id: `nb-${Date.now()}`,
+      id: crypto.randomUUID(),
       title: trimmed,
       scope: 'personal',
       sources: [],
       exams: [],
     };
-    setNotebooks((prev) => [newNotebook, ...prev]);
+    setPersonalNotebooks((prev) => [newNotebook, ...prev]);
     setView({ name: 'notebook', id: newNotebook.id });
   };
 
   const addSource = (notebookId: string, source: Omit<Source, 'id'>) => {
+    // addSource ignora cuadernos con scope 'general'
+    const target = notebooks.find((nb) => nb.id === notebookId);
+    if (!target || target.scope === 'general') {
+      return;
+    }
+
     const newSource: Source = {
       ...source,
-      id: `src-${Date.now()}`,
+      id: crypto.randomUUID(),
     };
-    setNotebooks((prev) =>
+
+    setPersonalNotebooks((prev) =>
       prev.map((nb) =>
         nb.id === notebookId ? { ...nb, sources: [...nb.sources, newSource] } : nb
       )
@@ -79,13 +90,24 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
   const saveExamResult = (notebookId: string, result: Omit<ExamResult, 'id'>) => {
     const newResult: ExamResult = {
       ...result,
-      id: `exam-${Date.now()}`,
+      id: crypto.randomUUID(),
     };
-    setNotebooks((prev) =>
-      prev.map((nb) =>
-        nb.id === notebookId ? { ...nb, exams: [newResult, ...nb.exams] } : nb
-      )
-    );
+
+    // Si es personal, actualiza personalNotebooks; si es general, se registra en la sesión
+    const isPersonal = personalNotebooks.some((nb) => nb.id === notebookId);
+    if (isPersonal) {
+      setPersonalNotebooks((prev) =>
+        prev.map((nb) =>
+          nb.id === notebookId ? { ...nb, exams: [newResult, ...nb.exams] } : nb
+        )
+      );
+    } else {
+      const generalTarget = initialNotebooks.find((nb) => nb.id === notebookId);
+      if (generalTarget) {
+        generalTarget.exams = [newResult, ...generalTarget.exams];
+      }
+    }
+
     setView({ name: 'results', id: notebookId, examId: newResult.id });
   };
 
