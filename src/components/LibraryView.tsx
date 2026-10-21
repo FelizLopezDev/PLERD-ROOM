@@ -3,7 +3,7 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import { useApp } from '../context/AppContext';
 import { Plus } from 'lucide-react';
 
@@ -11,6 +11,19 @@ export const LibraryView: React.FC = () => {
   const { notebooks, go, createNotebook } = useApp();
   const [isModalOpen, setIsModalOpen] = useState(false);
   const [newTitle, setNewTitle] = useState('');
+
+  // Cerrar modal con la tecla Escape
+  useEffect(() => {
+    if (!isModalOpen) return;
+    const handleKeyDown = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') {
+        setIsModalOpen(false);
+        setNewTitle('');
+      }
+    };
+    window.addEventListener('keydown', handleKeyDown);
+    return () => window.removeEventListener('keydown', handleKeyDown);
+  }, [isModalOpen]);
 
   const handleCreate = (e: React.FormEvent) => {
     e.preventDefault();
@@ -110,10 +123,21 @@ export const LibraryView: React.FC = () => {
         )}
       </div>
 
-      {/* Modal para Crear Cuaderno Personal */}
+      {/* Modal accesible para Crear Cuaderno Personal */}
       {isModalOpen && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-ink/20 backdrop-blur-xs">
-          <div className="bg-surface border border-line rounded-2xl max-w-md w-full p-6 space-y-4 shadow-sm">
+        <div
+          role="dialog"
+          aria-modal="true"
+          onClick={() => {
+            setIsModalOpen(false);
+            setNewTitle('');
+          }}
+          className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-ink/20 backdrop-blur-xs"
+        >
+          <div
+            onClick={(e) => e.stopPropagation()}
+            className="bg-surface border border-line rounded-2xl max-w-md w-full p-6 space-y-4 shadow-sm"
+          >
             <div className="space-y-1">
               <h3 className="text-base font-bold text-ink">Nuevo cuaderno</h3>
               <p className="text-xs text-muted">

@@ -35,7 +35,7 @@ const AppContent: React.FC = () => {
               onClick={() => go({ name: 'library' })}
               className="text-xs text-muted hover:text-ink inline-flex items-center gap-1.5 py-1 px-3 border border-line rounded-full bg-surface transition-colors"
             >
-              <ArrowLeft size={16} />
+              <ArrowLeft size={16} strokeWidth={1.75} />
               <span>Biblioteca</span>
             </button>
           )}
@@ -58,7 +58,7 @@ const AppContent: React.FC = () => {
               onClick={() => go({ name: 'notebook', id: view.id })}
               className="inline-flex items-center gap-1.5 text-xs text-muted hover:text-ink px-4 py-2 border border-line rounded-full"
             >
-              <ArrowLeft size={16} />
+              <ArrowLeft size={16} strokeWidth={1.75} />
               <span>Volver al cuaderno</span>
             </button>
           </div>
@@ -73,7 +73,7 @@ const AppContent: React.FC = () => {
               onClick={() => go({ name: 'notebook', id: view.id })}
               className="inline-flex items-center gap-1.5 text-xs text-muted hover:text-ink px-4 py-2 border border-line rounded-full"
             >
-              <ArrowLeft size={16} />
+              <ArrowLeft size={16} strokeWidth={1.75} />
               <span>Volver al cuaderno</span>
             </button>
           </div>

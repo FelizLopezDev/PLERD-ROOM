@@ -21,6 +21,22 @@ const isProd = process.env.NODE_ENV === 'production';
 // Límite de express.json subido a 10mb
 app.use(express.json({ limit: '10mb' }));
 
+// Límite simple de peticiones por IP en memoria (30 req / minuto)
+const rateLimitMap = new Map<string, number[]>();
+const RATE_LIMIT_WINDOW_MS = 60 * 1000;
+const MAX_REQUESTS_PER_MINUTE = 30;
+
+function isRateLimited(ip: string): boolean {
+  const now = Date.now();
+  const timestamps = (rateLimitMap.get(ip) || []).filter((t) => now - t < RATE_LIMIT_WINDOW_MS);
+  if (timestamps.length >= MAX_REQUESTS_PER_MINUTE) {
+    return true;
+  }
+  timestamps.push(now);
+  rateLimitMap.set(ip, timestamps);
+  return false;
+}
+
 const apiKey = process.env.GEMINI_API_KEY;
 let ai: GoogleGenAI | null = null;
 
@@ -32,6 +48,13 @@ if (apiKey) {
 
 // Ruta /api/chat: responde estrictamente con base en las fuentes marcadas
 app.post('/api/chat', async (req, res) => {
+  const clientIp = (req.headers['x-forwarded-for'] as string)?.split(',')[0].trim() || req.socket.remoteAddress || '127.0.0.1';
+  if (isRateLimited(clientIp)) {
+    return res.status(429).json({
+      error: 'Has superado el límite de 30 solicitudes por minuto. Por favor, espera un momento antes de enviar otra consulta.',
+    });
+  }
+
   const { message, history, sources } = req.body;
 
   if (!apiKey || !ai) {
@@ -55,10 +78,15 @@ app.post('/api/chat', async (req, res) => {
 
   const systemInstruction = `Responde solo con el contenido de las fuentes proporcionadas. Cita siempre el título de la fuente y la sección. Si la respuesta no está en ellas, di claramente que no aparece en las fuentes y no uses conocimiento externo.\n\nFUENTES SUMINISTRADAS:\n${sourcesContext}`;
 
+  // La conversación enviada a Gemini debe empezar siempre por un mensaje del usuario
   const contents: any[] = [];
   if (Array.isArray(history)) {
+    let startedWithUser = false;
     for (const h of history) {
-      if (h.sender && h.text) {
+      if (h.sender === 'user') {
+        startedWithUser = true;
+      }
+      if (startedWithUser && h.text) {
         contents.push({
           role: h.sender === 'user' ? 'user' : 'model',
           parts: [{ text: h.text }],
@@ -73,13 +101,14 @@ app.post('/api/chat', async (req, res) => {
   });
 
   try {
+    // Parámetro oficial de nivel de razonamiento bajo
     const response = await ai.models.generateContent({
       model: 'gemini-3.8-flash',
       contents,
       config: {
         systemInstruction,
         thinkingConfig: {
-          thinkingBudget: 1024,
+          thinkingLevel: 'LOW' as any,
         },
       },
     });
@@ -93,15 +122,22 @@ app.post('/api/chat', async (req, res) => {
 
     return res.json({ text });
   } catch (err: any) {
-    console.error('[PLERD ROOM] Error de Gemini en /api/chat:', err);
+    console.error('[PLERD ROOM] Error exacto de Gemini en /api/chat:', err);
     return res.status(500).json({
-      error: `Error al consultar Gemini (${err?.message || 'Fallo de conexión'}).`,
+      error: `Error de Gemini (${err?.message || String(err)}).`,
     });
   }
 });
 
 // Ruta /api/study: genera resumen, puntos clave o glosario de las fuentes marcadas
 app.post('/api/study', async (req, res) => {
+  const clientIp = (req.headers['x-forwarded-for'] as string)?.split(',')[0].trim() || req.socket.remoteAddress || '127.0.0.1';
+  if (isRateLimited(clientIp)) {
+    return res.status(429).json({
+      error: 'Has superado el límite de 30 solicitudes por minuto. Por favor, espera un momento antes de generar más material.',
+    });
+  }
+
   const { action, sources } = req.body;
 
   if (!apiKey || !ai) {
@@ -143,7 +179,7 @@ app.post('/api/study', async (req, res) => {
       config: {
         systemInstruction,
         thinkingConfig: {
-          thinkingBudget: 1024,
+          thinkingLevel: 'LOW' as any,
         },
       },
     });
@@ -157,14 +193,14 @@ app.post('/api/study', async (req, res) => {
 
     return res.json({ text });
   } catch (err: any) {
-    console.error('[PLERD ROOM] Error de Gemini en /api/study:', err);
+    console.error('[PLERD ROOM] Error exacto de Gemini en /api/study:', err);
     return res.status(500).json({
-      error: `Error al generar material de estudio con Gemini (${err?.message || 'Fallo de conexión'}).`,
+      error: `Error de Gemini (${err?.message || String(err)}).`,
     });
   }
 });
 
-// Ruta /api/exam: reservada para generación de preguntas
+// Ruta /api/exam: reservada
 app.post('/api/exam', async (req, res) => {
   return res.json({ questions: [] });
 });

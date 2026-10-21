@@ -6,23 +6,26 @@
 import React, { useState, useEffect, useMemo, useRef } from 'react';
 import { useApp } from '../context/AppContext';
 import { ChatMessage, Source } from '../types';
-import { ArrowLeft, GraduationCap, Plus, FileText, Send } from 'lucide-react';
+import { GraduationCap, Plus, FileText, Send } from 'lucide-react';
+import { MarkdownRenderer } from './MarkdownRenderer';
 
 export const NotebookView: React.FC<{ notebookId: string }> = ({ notebookId }) => {
-  const { notebooks, go, addSource, chatHistories, setNotebookChat } = useApp();
+  const {
+    notebooks,
+    go,
+    addSource,
+    removeSource,
+    deleteNotebook,
+    chatHistories,
+    setNotebookChat,
+  } = useApp();
+
   const notebook = notebooks.find((n) => n.id === notebookId);
 
   // Casillas de fuentes marcadas por defecto
   const [checkedSourceIds, setCheckedSourceIds] = useState<Set<string>>(() => {
     return new Set(notebook?.sources.map((s) => s.id) || []);
   });
-
-  // Asegurar que las fuentes nuevas se marquen automáticamente
-  useEffect(() => {
-    if (notebook) {
-      setCheckedSourceIds(new Set(notebook.sources.map((s) => s.id)));
-    }
-  }, [notebook?.sources.length]);
 
   const [activeSourceId, setActiveSourceId] = useState<string | null>(
     notebook && notebook.sources.length > 0 ? notebook.sources[0].id : null
@@ -56,7 +59,22 @@ export const NotebookView: React.FC<{ notebookId: string }> = ({ notebookId }) =
   const [savedConfirmation, setSavedConfirmation] = useState(false);
   const fileInputRef = useRef<HTMLInputElement>(null);
 
-  // Preguntas sugeridas dinámicas generadas a partir de los títulos
+  // Cerrar modal de agregar fuente con Escape
+  useEffect(() => {
+    if (!isAddModalOpen) return;
+    const handleKeyDown = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') {
+        setIsAddModalOpen(false);
+        setSourceTitle('');
+        setSourceContent('');
+        setSourceLink('');
+      }
+    };
+    window.addEventListener('keydown', handleKeyDown);
+    return () => window.removeEventListener('keydown', handleKeyDown);
+  }, [isAddModalOpen]);
+
+  // Preguntas sugeridas dinámicas generadas desde los títulos de las fuentes
   const dynamicQuestions = useMemo(() => {
     if (!notebook || notebook.sources.length === 0) return [];
     const s = notebook.sources;
@@ -72,13 +90,6 @@ export const NotebookView: React.FC<{ notebookId: string }> = ({ notebookId }) =
     return (
       <div className="bg-surface border border-line rounded-2xl p-8 text-center space-y-4">
         <p className="text-sm text-muted">No se encontró este cuaderno.</p>
-        <button
-          onClick={() => go({ name: 'library' })}
-          className="inline-flex items-center gap-2 text-xs text-muted hover:text-ink px-4 py-2 border border-line rounded-full"
-        >
-          <ArrowLeft size={16} strokeWidth={1.75} />
-          <span>Volver a la biblioteca</span>
-        </button>
       </div>
     );
   }
@@ -114,13 +125,16 @@ export const NotebookView: React.FC<{ notebookId: string }> = ({ notebookId }) =
     setInputQuery('');
     setIsThinking(true);
 
+    // Filtrar mensaje de saludo inicial: enviar SOLO turnos reales que comiencen por el usuario
+    const realHistory = messages.filter((m) => m.id !== 'm-initial');
+
     try {
       const res = await fetch('/api/chat', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           message: userMsg.text,
-          history: messages,
+          history: realHistory,
           sources: selectedSources.map((s) => ({ title: s.title, content: s.content })),
         }),
       });
@@ -197,16 +211,22 @@ export const NotebookView: React.FC<{ notebookId: string }> = ({ notebookId }) =
 
     const finalContent =
       addMode === 'link'
-        ? `Fuente vinculada a: ${sourceLink}\n\n${sourceContent || 'Documento en línea agregado para consulta de sala.'}`
+        ? `Fuente de referencia: ${sourceLink}\n\n${sourceContent}`
         : sourceContent;
 
     if (!finalContent.trim()) return;
 
-    addSource(notebook.id, {
+    // Agregar fuente y marcar SOLO la nueva fuente conservando la selección existente
+    const newSourceId = addSource(notebook.id, {
       title: sourceTitle.trim(),
       type: addMode === 'file' ? 'file' : addMode === 'link' ? 'link' : 'text',
       content: finalContent.trim(),
     });
+
+    if (newSourceId) {
+      setCheckedSourceIds((prev) => new Set([...prev, newSourceId]));
+      setActiveSourceId(newSourceId);
+    }
 
     setSavedConfirmation(true);
     setTimeout(() => {
@@ -215,33 +235,60 @@ export const NotebookView: React.FC<{ notebookId: string }> = ({ notebookId }) =
       setSourceTitle('');
       setSourceContent('');
       setSourceLink('');
-    }, 900);
+    }, 700);
+  };
+
+  const handleRemoveSource = (sourceId: string, title: string) => {
+    if (window.confirm(`¿Quitar la fuente "${title}" de este cuaderno personal?`)) {
+      removeSource(notebook.id, sourceId);
+      setCheckedSourceIds((prev) => {
+        const next = new Set(prev);
+        next.delete(sourceId);
+        return next;
+      });
+      if (activeSourceId === sourceId) {
+        setActiveSourceId(null);
+      }
+    }
+  };
+
+  const handleDeleteNotebook = () => {
+    if (window.confirm(`¿Seguro que deseas eliminar el cuaderno "${notebook.title}"? Esta acción no se puede deshacer.`)) {
+      deleteNotebook(notebook.id);
+    }
   };
 
   return (
     <div className="space-y-6">
-      {/* Cabecera del Cuaderno */}
+      {/* Cabecera del Cuaderno: Título único y botón Examinarme (sin botón volver duplicado) */}
       <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 pb-2 border-b border-line">
         <div className="flex items-center gap-3">
-          <button
-            onClick={() => go({ name: 'library' })}
-            className="inline-flex items-center gap-1.5 text-xs text-muted hover:text-ink transition-colors"
-          >
-            <ArrowLeft size={16} strokeWidth={1.75} />
-            <span>Biblioteca</span>
-          </button>
-          <span className="text-muted">/</span>
           <h1 className="text-lg font-bold text-ink truncate">{notebook.title}</h1>
+          <span className="text-xs text-muted">
+            {notebook.scope === 'general' ? 'Oficial PLERD' : 'Personal'}
+          </span>
         </div>
 
-        <button
-          onClick={() => go({ name: 'exam', id: notebook.id })}
-          disabled={notebook.sources.length === 0}
-          className="inline-flex items-center gap-2 bg-accent hover:bg-accent-strong disabled:opacity-40 disabled:cursor-not-allowed text-white text-xs font-semibold px-5 py-2.5 rounded-full transition-colors self-start sm:self-auto"
-        >
-          <GraduationCap size={16} strokeWidth={1.75} />
-          <span>Examinarme</span>
-        </button>
+        <div className="flex items-center gap-2 self-start sm:self-auto">
+          {notebook.scope === 'personal' && (
+            <button
+              type="button"
+              onClick={handleDeleteNotebook}
+              className="text-xs text-muted hover:text-ink border border-line bg-surface rounded-full px-3 py-1.5 transition-colors"
+            >
+              Eliminar cuaderno
+            </button>
+          )}
+
+          <button
+            onClick={() => go({ name: 'exam', id: notebook.id })}
+            disabled={notebook.sources.length === 0}
+            className="inline-flex items-center gap-2 bg-accent hover:bg-accent-strong disabled:opacity-40 disabled:cursor-not-allowed text-white text-xs font-semibold px-5 py-2.5 rounded-full transition-colors"
+          >
+            <GraduationCap size={16} strokeWidth={1.75} />
+            <span>Examinarme</span>
+          </button>
+        </div>
       </div>
 
       {/* Contenido en Dos Columnas */}
@@ -277,7 +324,7 @@ export const NotebookView: React.FC<{ notebookId: string }> = ({ notebookId }) =
             </p>
           )}
 
-          {/* Lista de fuentes con casilla y FileText únicamente aquí */}
+          {/* Lista de fuentes con casilla, FileText y botón discreto Quitar */}
           <div className="space-y-2">
             {notebook.sources.length === 0 ? (
               <p className="text-xs text-muted py-4 text-center">
@@ -305,13 +352,28 @@ export const NotebookView: React.FC<{ notebookId: string }> = ({ notebookId }) =
                       <span className="truncate">{source.title}</span>
                     </div>
 
-                    <input
-                      type="checkbox"
-                      checked={isChecked}
-                      onChange={() => toggleSourceCheck(source.id)}
-                      aria-label={`Incluir ${source.title}`}
-                      className="w-4 h-4 ml-2 rounded border-line cursor-pointer"
-                    />
+                    <div className="flex items-center gap-2 ml-2">
+                      {notebook.scope === 'personal' && (
+                        <button
+                          type="button"
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            handleRemoveSource(source.id, source.title);
+                          }}
+                          className="text-[11px] text-muted hover:text-ink border border-line rounded-full px-2 py-0.5 transition-colors"
+                        >
+                          Quitar
+                        </button>
+                      )}
+
+                      <input
+                        type="checkbox"
+                        checked={isChecked}
+                        onChange={() => toggleSourceCheck(source.id)}
+                        aria-label={`Incluir ${source.title}`}
+                        className="w-4 h-4 rounded border-line cursor-pointer"
+                      />
+                    </div>
                   </div>
                 );
               })
@@ -379,7 +441,7 @@ export const NotebookView: React.FC<{ notebookId: string }> = ({ notebookId }) =
             )}
 
             {studyResult && !isStudyLoading && (
-              <div className="bg-base border border-line rounded-xl p-3.5 text-xs text-ink whitespace-pre-line leading-relaxed max-h-56 overflow-y-auto">
+              <div className="bg-base border border-line rounded-xl p-3.5 text-xs text-ink leading-relaxed max-h-56 overflow-y-auto">
                 <span className="font-semibold block mb-1.5 text-muted uppercase tracking-wider text-[10px]">
                   {studyAction === 'summary'
                     ? 'Resumen'
@@ -387,12 +449,12 @@ export const NotebookView: React.FC<{ notebookId: string }> = ({ notebookId }) =
                     ? 'Puntos clave'
                     : 'Glosario'}
                 </span>
-                {studyResult}
+                <MarkdownRenderer content={studyResult} />
               </div>
             )}
           </div>
 
-          {/* Interfaz de Chat */}
+          {/* Interfaz de Chat con renderizado de Markdown */}
           <div className="bg-surface border border-line rounded-2xl p-5 flex flex-col h-[520px]">
             <div className="pb-3 border-b border-line flex items-center justify-between">
               <h2 className="text-sm font-semibold text-ink">Conversación</h2>
@@ -413,13 +475,17 @@ export const NotebookView: React.FC<{ notebookId: string }> = ({ notebookId }) =
                     className={`flex flex-col ${isUser ? 'items-end' : 'items-start'}`}
                   >
                     <div
-                      className={`max-w-[85%] rounded-2xl p-3.5 text-xs leading-relaxed whitespace-pre-line ${
+                      className={`max-w-[85%] rounded-2xl p-3.5 text-xs leading-relaxed ${
                         isUser
                           ? 'bg-ink text-white'
                           : 'bg-base text-ink border border-line'
                       }`}
                     >
-                      {m.text}
+                      {isUser ? (
+                        <p className="whitespace-pre-line">{m.text}</p>
+                      ) : (
+                        <MarkdownRenderer content={m.text} />
+                      )}
                     </div>
                   </div>
                 );
@@ -490,13 +556,26 @@ export const NotebookView: React.FC<{ notebookId: string }> = ({ notebookId }) =
         </div>
       </div>
 
-      {/* Modal para Agregar Fuente (solo personales) */}
+      {/* Modal accesible para Agregar Fuente (solo personales) */}
       {isAddModalOpen && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-ink/20 backdrop-blur-xs">
-          <div className="bg-surface border border-line rounded-2xl max-w-lg w-full p-6 space-y-4 shadow-sm">
+        <div
+          role="dialog"
+          aria-modal="true"
+          onClick={() => {
+            setIsAddModalOpen(false);
+            setSourceTitle('');
+            setSourceContent('');
+            setSourceLink('');
+          }}
+          className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-ink/20 backdrop-blur-xs"
+        >
+          <div
+            onClick={(e) => e.stopPropagation()}
+            className="bg-surface border border-line rounded-2xl max-w-lg w-full p-6 space-y-4 shadow-sm"
+          >
             <h3 className="text-base font-bold text-ink">Agregar fuente</h3>
 
-            {/* Pestañas de método: texto, archivo, enlace */}
+            {/* Pestañas de método */}
             <div className="flex items-center gap-2 border-b border-line pb-2">
               <button
                 type="button"
@@ -529,7 +608,7 @@ export const NotebookView: React.FC<{ notebookId: string }> = ({ notebookId }) =
                     : 'border-transparent text-muted'
                 }`}
               >
-                Pegar enlace
+                Enlace de referencia
               </button>
             </div>
 
@@ -560,27 +639,32 @@ export const NotebookView: React.FC<{ notebookId: string }> = ({ notebookId }) =
               )}
 
               {addMode === 'link' && (
-                <div>
-                  <label className="text-xs text-muted block mb-1">Enlace del documento</label>
-                  <input
-                    type="url"
-                    required
-                    placeholder="https://..."
-                    value={sourceLink}
-                    onChange={(e) => setSourceLink(e.target.value)}
-                    className="w-full bg-base border border-line rounded-xl px-3 py-2 text-xs text-ink focus:outline-none"
-                  />
+                <div className="space-y-2">
+                  <div>
+                    <label className="text-xs text-muted block mb-1">Enlace de referencia</label>
+                    <input
+                      type="url"
+                      required
+                      placeholder="https://..."
+                      value={sourceLink}
+                      onChange={(e) => setSourceLink(e.target.value)}
+                      className="w-full bg-base border border-line rounded-xl px-3 py-2 text-xs text-ink focus:outline-none"
+                    />
+                  </div>
+                  <div className="bg-base border border-line rounded-xl p-2.5 text-xs text-muted leading-relaxed">
+                    Este enlace es solo de referencia. Para que el cuaderno pueda estudiar su contenido, pega el texto del documento.
+                  </div>
                 </div>
               )}
 
               <div>
                 <label className="text-xs text-muted block mb-1">
-                  {addMode === 'link' ? 'Descripción o notas complementarias' : 'Contenido de la fuente'}
+                  {addMode === 'link' ? 'Texto pegado del documento *' : 'Contenido de la fuente *'}
                 </label>
                 <textarea
                   rows={4}
-                  required={addMode !== 'link'}
-                  placeholder="Escribe o revisa el contenido aquí..."
+                  required
+                  placeholder="Escribe o pega el texto del documento aquí..."
                   value={sourceContent}
                   onChange={(e) => setSourceContent(e.target.value)}
                   className="w-full bg-base border border-line rounded-xl px-3 py-2 text-xs text-ink focus:outline-none"
@@ -601,8 +685,8 @@ export const NotebookView: React.FC<{ notebookId: string }> = ({ notebookId }) =
                 </button>
                 <button
                   type="submit"
-                  disabled={savedConfirmation}
-                  className="text-xs font-semibold bg-accent hover:bg-accent-strong text-white px-5 py-2 rounded-full transition-colors"
+                  disabled={savedConfirmation || !sourceContent.trim() || !sourceTitle.trim()}
+                  className="text-xs font-semibold bg-accent hover:bg-accent-strong disabled:opacity-50 text-white px-5 py-2 rounded-full transition-colors"
                 >
                   Confirmar y guardar
                 </button>

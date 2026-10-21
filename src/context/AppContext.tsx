@@ -7,14 +7,17 @@ import React, { createContext, useContext, useState, useEffect, ReactNode } from
 import { Notebook, Source, ExamResult, View, ChatMessage } from '../types';
 import { initialNotebooks } from '../data/seed';
 
-const STORAGE_KEY = 'plerd_personal_v2';
+const STORAGE_PERSONAL_KEY = 'plerd_personal_v2';
+const STORAGE_EXAMS_KEY = 'plerd_exams_v1';
 
 interface AppContextType {
   notebooks: Notebook[];
   view: View;
   go: (view: View) => void;
   createNotebook: (title: string) => void;
-  addSource: (notebookId: string, source: Omit<Source, 'id'>) => void;
+  deleteNotebook: (notebookId: string) => void;
+  addSource: (notebookId: string, source: Omit<Source, 'id'>) => string | undefined;
+  removeSource: (notebookId: string, sourceId: string) => void;
   saveExamResult: (notebookId: string, result: Omit<ExamResult, 'id'>) => void;
   chatHistories: Record<string, ChatMessage[]>;
   setNotebookChat: (notebookId: string, messages: ChatMessage[]) => void;
@@ -25,7 +28,7 @@ const AppContext = createContext<AppContextType | undefined>(undefined);
 export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => {
   const [personalNotebooks, setPersonalNotebooks] = useState<Notebook[]>(() => {
     try {
-      const saved = localStorage.getItem(STORAGE_KEY);
+      const saved = localStorage.getItem(STORAGE_PERSONAL_KEY);
       if (saved) {
         const parsed = JSON.parse(saved);
         if (Array.isArray(parsed)) {
@@ -38,22 +41,54 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
     return [];
   });
 
-  const [view, setView] = useState<View>({ name: 'library' });
+  // Exámenes de TODOS los cuadernos (generales y personales) persistidos en plerd_exams_v1
+  const [examsByNotebook, setExamsByNotebook] = useState<Record<string, ExamResult[]>>(() => {
+    try {
+      const saved = localStorage.getItem(STORAGE_EXAMS_KEY);
+      if (saved) {
+        const parsed = JSON.parse(saved);
+        if (typeof parsed === 'object' && parsed !== null) {
+          return parsed;
+        }
+      }
+    } catch {
+      // Fallback
+    }
+    return {};
+  });
 
-  // Historial de chat por cuaderno durante la sesión abierta (en memoria)
+  const [view, setView] = useState<View>({ name: 'library' });
   const [chatHistories, setChatHistories] = useState<Record<string, ChatMessage[]>>({});
 
-  // Guardar en localStorage únicamente los cuadernos personales
+  // Guardar cuadernos personales
   useEffect(() => {
     try {
-      localStorage.setItem(STORAGE_KEY, JSON.stringify(personalNotebooks));
+      localStorage.setItem(STORAGE_PERSONAL_KEY, JSON.stringify(personalNotebooks));
     } catch {
       // Ignore
     }
   }, [personalNotebooks]);
 
-  // Cuadernos generales siempre desde seed + personales guardados
-  const notebooks: Notebook[] = [...initialNotebooks, ...personalNotebooks];
+  // Guardar exámenes de todos los cuadernos
+  useEffect(() => {
+    try {
+      localStorage.setItem(STORAGE_EXAMS_KEY, JSON.stringify(examsByNotebook));
+    } catch {
+      // Ignore
+    }
+  }, [examsByNotebook]);
+
+  // Fusionar cuadernos con sus respectivos exámenes persistidos (sin mutar initialNotebooks)
+  const notebooks: Notebook[] = [
+    ...initialNotebooks.map((nb) => ({
+      ...nb,
+      exams: examsByNotebook[nb.id] || [],
+    })),
+    ...personalNotebooks.map((nb) => ({
+      ...nb,
+      exams: examsByNotebook[nb.id] || [],
+    })),
+  ];
 
   const go = (newView: View) => {
     setView(newView);
@@ -73,21 +108,41 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
     setView({ name: 'notebook', id: newNotebook.id });
   };
 
+  const deleteNotebook = (notebookId: string) => {
+    const target = personalNotebooks.find((nb) => nb.id === notebookId);
+    if (!target) return;
+
+    setPersonalNotebooks((prev) => prev.filter((nb) => nb.id !== notebookId));
+    setView({ name: 'library' });
+  };
+
   const addSource = (notebookId: string, source: Omit<Source, 'id'>) => {
-    // addSource ignora cuadernos con scope 'general'
     const target = notebooks.find((nb) => nb.id === notebookId);
     if (!target || target.scope === 'general') {
-      return;
+      return undefined;
     }
 
+    const newId = crypto.randomUUID();
     const newSource: Source = {
       ...source,
-      id: crypto.randomUUID(),
+      id: newId,
     };
 
     setPersonalNotebooks((prev) =>
       prev.map((nb) =>
         nb.id === notebookId ? { ...nb, sources: [...nb.sources, newSource] } : nb
+      )
+    );
+
+    return newId;
+  };
+
+  const removeSource = (notebookId: string, sourceId: string) => {
+    setPersonalNotebooks((prev) =>
+      prev.map((nb) =>
+        nb.id === notebookId
+          ? { ...nb, sources: nb.sources.filter((s) => s.id !== sourceId) }
+          : nb
       )
     );
   };
@@ -98,19 +153,13 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
       id: crypto.randomUUID(),
     };
 
-    const isPersonal = personalNotebooks.some((nb) => nb.id === notebookId);
-    if (isPersonal) {
-      setPersonalNotebooks((prev) =>
-        prev.map((nb) =>
-          nb.id === notebookId ? { ...nb, exams: [newResult, ...nb.exams] } : nb
-        )
-      );
-    } else {
-      const generalTarget = initialNotebooks.find((nb) => nb.id === notebookId);
-      if (generalTarget) {
-        generalTarget.exams = [newResult, ...generalTarget.exams];
-      }
-    }
+    setExamsByNotebook((prev) => {
+      const currentList = prev[notebookId] || [];
+      return {
+        ...prev,
+        [notebookId]: [newResult, ...currentList],
+      };
+    });
 
     setView({ name: 'results', id: notebookId, examId: newResult.id });
   };
@@ -129,7 +178,9 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
         view,
         go,
         createNotebook,
+        deleteNotebook,
         addSource,
+        removeSource,
         saveExamResult,
         chatHistories,
         setNotebookChat,
